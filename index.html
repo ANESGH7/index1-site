@@ -2,53 +2,52 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>WebSocket Chat + Voice Call</title>
+  <title>WebSocket Chat + Live Video + GPS + Voice</title>
   <style>
     body { font-family: Arial; padding: 20px; }
-    #messageLog { border: 1px solid #ccc; padding: 10px; height: 200px; overflow-y: auto; margin-bottom: 20px; }
-    canvas { max-width: 100%; border: 1px solid #ccc; }
-    #map { height: 300px; margin-top: 10px; }
+    #messageLog { border: 1px solid #ccc; height: 150px; overflow-y: auto; margin: 10px 0; padding: 10px; }
+    canvas, #map { border: 1px solid #ccc; margin-top: 10px; }
     .section { margin-bottom: 20px; }
+    #map { height: 200px; width: 100%; }
   </style>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
 </head>
 <body>
-  <h2>📡 WebSocket Chat with Voice Call</h2>
+  <h2>📡 WebSocket App with Voice + GPS</h2>
 
   <div class="section">
-    <input type="text" id="roomName" placeholder="Room name" />
+    <input id="roomName" placeholder="Room name" />
     <button onclick="createRoom()">Create</button>
     <button onclick="joinRoom()">Join</button>
   </div>
 
   <div class="section">
-    <input type="text" id="textMessage" placeholder="Enter message" />
+    <input id="textMessage" placeholder="Message" />
     <button onclick="sendMessage()">Send</button>
     <button onclick="clearMessages()">🧹 Clear</button>
   </div>
 
   <div class="section">
-    <label><strong>Video Quality:</strong></label>
+    <label>Video Quality:</label>
     <select id="videoQualitySelect">
-      <option value="veryLow120p">Very Low (120p)</option>
       <option value="low240p">Low (240p)</option>
       <option value="medium" selected>Medium (720p)</option>
       <option value="high">High (1080p)</option>
     </select>
-    <label>FPS: <input type="range" id="fpsSlider" min="5" max="60" value="30"> <span id="fpsValue">30</span></label><br/>
-    <button id="videoButton" onclick="toggleLiveVideo()">📷 Start Live Video</button>
+    <label>FPS:</label>
+    <input type="range" id="fpsSlider" min="5" max="60" value="30">
+    <span id="fpsValue">30</span> FPS
+    <button onclick="toggleLiveVideo()">📷 Start Live Video</button>
   </div>
 
   <div class="section">
-    <label>GPS Interval (sec):</label>
-    <input type="number" id="gpsInterval" value="5" min="1" style="width: 60px;">
-    <button onclick="toggleGPS()">📍 Start GPS</button>
+    <label>GPS Interval (s):</label>
+    <input id="gpsInterval" type="number" value="5" min="1" />
+    <button onclick="startGPS()">📍 Start GPS</button>
   </div>
 
   <div class="section">
-    <button onclick="recordVoice()">🎙️ Send Voice Message</button>
-    <button onclick="toggleVoiceCall()">🎧 Start Voice Call</button>
-    <audio id="audioPlayer" controls style="display:none;"></audio>
+    <button onclick="toggleVoiceCall()">🎤 Start Voice Call</button>
   </div>
 
   <div class="section">
@@ -57,61 +56,54 @@
   </div>
 
   <div class="section">
-    <h3>🎥 Received Live Video</h3>
+    <h3>🎥 Video</h3>
     <canvas id="videoCanvas" width="320" height="240"></canvas>
   </div>
 
   <div class="section">
-    <h3>🗺️ GPS Map</h3>
+    <h3>🗺️ Client Map</h3>
     <div id="map"></div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
     const ws = new WebSocket("wss://chat-643f.onrender.com");
-    ws.binaryType = "arraybuffer";
     let currentRoom = "";
     let sendingVideo = false;
+    let activeStream = null;
     let videoInterval = null;
-    let gpsIntervalID = null;
-    let voiceCallStream = null;
-    let voiceCallRecorder = null;
-    let voiceCallInterval = null;
-    const markers = {};
+    let gpsTimer = null;
+    let voiceStream = null;
+    let voiceInterval = null;
+    const clientMarkers = new Map();
+
+    ws.binaryType = "arraybuffer";
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
     const map = L.map('map').setView([0, 0], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
 
-    ws.onopen = () => logMessage("✅ Connected");
+    ws.onopen = () => log("✅ Connected");
 
     ws.onmessage = (event) => {
       if (typeof event.data === "string") {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "message") {
-            logMessage("💬 " + msg.text);
-            if (msg.text.startsWith("GPS:")) {
-              const gps = msg.text.match(/GPS:([\d\.\-]+),([\d\.\-]+)/);
-              if (gps) {
-                const lat = parseFloat(gps[1]);
-                const lon = parseFloat(gps[2]);
-                const id = msg.text.split('&')[1]?.trim() || msg.text;
-                updateMarker(id, lat, lon);
-              }
-            }
-          }
-        } catch {
-          logMessage("❗ Invalid message: " + event.data);
+        const msg = JSON.parse(event.data);
+        if (msg.type === "message" && msg.text.startsWith("GPS:")) {
+          const [lat, lon, id] = msg.text.slice(4).split(",");
+          updateMarker(id, lat, lon);
+        } else if (msg.type === "message") {
+          log("💬 " + msg.text);
         }
       } else {
-        const blob = new Blob([event.data]);
-        const audio = document.getElementById("audioPlayer");
-
-        if (blob.type.startsWith("audio/")) {
-          audio.src = URL.createObjectURL(blob);
-          audio.style.display = "block";
-          audio.play();
-        } else {
+        // Handle binary (video or audio)
+        audioCtx.decodeAudioData(event.data.slice(0)).then(buffer => {
+          const source = audioCtx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(audioCtx.destination);
+          source.start();
+        }).catch(() => {
+          // fallback for video
+          const blob = new Blob([event.data], { type: "image/jpeg" });
           const img = new Image();
           img.onload = () => {
             const canvas = document.getElementById("videoCanvas");
@@ -121,167 +113,134 @@
             ctx.drawImage(img, 0, 0);
           };
           img.src = URL.createObjectURL(blob);
-        }
+        });
       }
     };
 
-    function updateMarker(id, lat, lon) {
-      if (markers[id]) {
-        markers[id].setLatLng([lat, lon]);
-      } else {
-        markers[id] = L.marker([lat, lon]).addTo(map).bindPopup(`Client: ${id}`);
-      }
-    }
-
     function createRoom() {
-      const roomName = document.getElementById("roomName").value.trim();
-      if (!roomName) return;
-      currentRoom = roomName;
-      ws.send(JSON.stringify({ type: "create", roomName }));
-      logMessage("📂 Created room: " + roomName);
+      currentRoom = document.getElementById("roomName").value.trim();
+      ws.send(JSON.stringify({ type: "create", roomName: currentRoom }));
+      log("📂 Created room: " + currentRoom);
     }
 
     function joinRoom() {
-      const roomName = document.getElementById("roomName").value.trim();
-      if (!roomName) return;
-      currentRoom = roomName;
-      ws.send(JSON.stringify({ type: "join", roomName }));
-      logMessage("📥 Joined room: " + roomName);
+      currentRoom = document.getElementById("roomName").value.trim();
+      ws.send(JSON.stringify({ type: "join", roomName: currentRoom }));
+      log("📥 Joined room: " + currentRoom);
     }
 
     function sendMessage() {
       const text = document.getElementById("textMessage").value.trim();
-      if (!text || !currentRoom) return;
-      ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text }));
-      document.getElementById("textMessage").value = "";
+      if (text && currentRoom) {
+        ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text }));
+        document.getElementById("textMessage").value = "";
+      }
     }
 
     function clearMessages() {
       document.getElementById("messageLog").innerHTML = "";
     }
 
-    async function toggleLiveVideo() {
-      const button = document.getElementById("videoButton");
+    function log(msg) {
+      const div = document.createElement("div");
+      div.textContent = msg;
+      document.getElementById("messageLog").appendChild(div);
+    }
+
+    function toggleLiveVideo() {
       if (sendingVideo) {
         clearInterval(videoInterval);
         sendingVideo = false;
-        button.textContent = "📷 Start Live Video";
+        activeStream?.getTracks().forEach(t => t.stop());
         return;
       }
 
-      const constraints = getVideoConstraints();
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      const video = document.createElement("video");
-      video.srcObject = stream;
-      await video.play();
-
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      sendingVideo = true;
-      button.textContent = "🛑 Stop Live Video";
-
       const fps = parseInt(document.getElementById("fpsSlider").value);
-      videoInterval = setInterval(() => {
-        if (!currentRoom) return;
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0);
-        canvas.toBlob(blob => {
-          if (blob) {
+      const constraints = {
+        video: getVideoConstraints()
+      };
+
+      navigator.mediaDevices.getUserMedia(constraints).then(stream => {
+        activeStream = stream;
+        const video = document.createElement("video");
+        video.srcObject = stream;
+        video.play();
+
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+
+        videoInterval = setInterval(() => {
+          if (!currentRoom || video.videoWidth === 0) return;
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+          canvas.toBlob(blob => {
             ws.send(JSON.stringify({ type: "binary-image", roomName: currentRoom }));
-            setTimeout(() => blob.arrayBuffer().then(buf => ws.send(buf)), 20);
-          }
-        }, "image/jpeg", 0.6);
-      }, 1000 / fps);
+            blob.arrayBuffer().then(buf => ws.send(buf));
+          }, "image/jpeg", 0.6);
+        }, 1000 / fps);
+
+        sendingVideo = true;
+      }).catch(err => log("🚫 Camera error: " + err.message));
     }
 
     function getVideoConstraints() {
       switch (document.getElementById("videoQualitySelect").value) {
-        case "veryLow120p": return { video: { width: 160, height: 120, frameRate: 10 } };
-        case "low240p":     return { video: { width: 426, height: 240, frameRate: 15 } };
-        case "high":        return { video: { width: 1920, height: 1080, frameRate: 30 } };
-        default:            return { video: { width: 1280, height: 720, frameRate: 30 } };
+        case "low240p": return { width: 426, height: 240 };
+        case "medium": return { width: 1280, height: 720 };
+        case "high": return { width: 1920, height: 1080 };
       }
     }
 
-    function toggleGPS() {
-      if (gpsIntervalID) {
-        clearInterval(gpsIntervalID);
-        gpsIntervalID = null;
-        logMessage("🛑 GPS stopped.");
-        return;
-      }
-
-      const intervalSec = parseInt(document.getElementById("gpsInterval").value) || 5;
-      gpsIntervalID = setInterval(() => {
+    function startGPS() {
+      clearInterval(gpsTimer);
+      const interval = parseInt(document.getElementById("gpsInterval").value) * 1000;
+      gpsTimer = setInterval(() => {
         navigator.geolocation.getCurrentPosition(pos => {
-          const lat = pos.coords.latitude;
-          const lon = pos.coords.longitude;
-          const msg = `GPS:${lat},${lon} & ${location.host}`;
+          const lat = pos.coords.latitude.toFixed(6);
+          const lon = pos.coords.longitude.toFixed(6);
           if (currentRoom) {
-            ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text: msg }));
+            const text = `GPS:${lat},${lon},ME`;
+            ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text }));
           }
         });
-      }, intervalSec * 1000);
-
-      logMessage("📍 GPS started.");
+      }, interval);
     }
 
-    async function recordVoice() {
-      if (!currentRoom) return alert("Join a room first.");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      const chunks = [];
-
-      recorder.ondataavailable = e => chunks.push(e.data);
-      recorder.onstop = async () => {
-        const blob = new Blob(chunks, { type: 'audio/webm' });
-        const buffer = await blob.arrayBuffer();
-        ws.send(JSON.stringify({ type: "binary-audio", roomName: currentRoom }));
-        setTimeout(() => ws.send(buffer), 50);
-        stream.getTracks().forEach(t => t.stop());
-        logMessage("📤 Voice message sent.");
-      };
-
-      recorder.start();
-      setTimeout(() => recorder.stop(), 3000);
+    function updateMarker(id, lat, lon) {
+      const latNum = parseFloat(lat);
+      const lonNum = parseFloat(lon);
+      if (!clientMarkers.has(id)) {
+        const marker = L.marker([latNum, lonNum]).addTo(map).bindPopup(id);
+        clientMarkers.set(id, marker);
+      } else {
+        clientMarkers.get(id).setLatLng([latNum, lonNum]);
+      }
     }
 
-    async function toggleVoiceCall() {
-      if (voiceCallInterval) {
-        clearInterval(voiceCallInterval);
-        voiceCallStream.getTracks().forEach(t => t.stop());
-        voiceCallStream = null;
-        voiceCallInterval = null;
-        logMessage("🎧 Voice call stopped.");
+    function toggleVoiceCall() {
+      if (voiceStream) {
+        clearInterval(voiceInterval);
+        voiceStream.getTracks().forEach(t => t.stop());
+        voiceStream = null;
         return;
       }
 
-      if (!currentRoom) return alert("Join a room first.");
-      voiceCallStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(voiceCallStream);
-      recorder.ondataavailable = async e => {
-        const blob = e.data;
-        const buffer = await blob.arrayBuffer();
-        ws.send(JSON.stringify({ type: "binary-audio", roomName: currentRoom }));
-        setTimeout(() => ws.send(buffer), 20);
-      };
-
-      recorder.start(1000); // 1 sec chunk
-      voiceCallInterval = recorder;
-      logMessage("🎧 Voice call started.");
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        voiceStream = stream;
+        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+        mediaRecorder.ondataavailable = e => {
+          if (currentRoom && e.data.size > 0) {
+            e.data.arrayBuffer().then(buf => ws.send(buf));
+          }
+        };
+        mediaRecorder.start(500); // send every 500ms
+      });
     }
 
     document.getElementById("fpsSlider").addEventListener("input", e => {
       document.getElementById("fpsValue").textContent = e.target.value;
     });
-
-    function logMessage(text) {
-      const div = document.createElement("div");
-      div.textContent = text;
-      document.getElementById("messageLog").appendChild(div);
-      document.getElementById("messageLog").scrollTop = 99999;
-    }
   </script>
 </body>
 </html>
