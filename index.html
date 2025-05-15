@@ -27,7 +27,7 @@
   </div>
 
   <div class="section">
-    <label for="videoQualitySelect"><strong>Video Quality:</strong></label>
+    <label><strong>Video Quality:</strong></label>
     <select id="videoQualitySelect">
       <option value="veryLow120p">Very Low (120p)</option>
       <option value="low240p">Low (240p)</option>
@@ -69,7 +69,7 @@
     let videoInterval = null;
     let activeStream = null;
     let gpsInterval = null;
-    const markers = {};
+    const clientMarkers = {}; // key = client ID, value = L.marker
     const map = L.map('map').setView([0, 0], 2);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
@@ -187,11 +187,12 @@
       logMessage("📍 GPS started");
     }
 
-    function updateMarker(id, lat, lng) {
-      if (markers[id]) {
-        markers[id].setLatLng([lat, lng]);
+    function updateMarker(clientId, lat, lng) {
+      if (clientMarkers[clientId]) {
+        clientMarkers[clientId].setLatLng([lat, lng]);
       } else {
-        markers[id] = L.marker([lat, lng]).addTo(map).bindPopup("Client " + id);
+        const marker = L.marker([lat, lng]).addTo(map).bindPopup("Client " + clientId);
+        clientMarkers[clientId] = marker;
       }
     }
 
@@ -202,11 +203,14 @@
           if (msg.type === "message") {
             logMessage("💬 " + msg.text);
             if (msg.text.startsWith("GPS:")) {
-              const coordsText = msg.text.slice(4).split(/[^\d.-]+/).filter(Boolean);
-              const lat = parseFloat(coordsText[0]);
-              const lng = parseFloat(coordsText[1]);
-              if (!isNaN(lat) && !isNaN(lng)) {
-                updateMarker(msg.id || msg.user || "unknown", lat, lng);
+              const coords = msg.text.slice(4).split(/[^\d\.\-]+/).filter(Boolean);
+              if (coords.length >= 2) {
+                const lat = parseFloat(coords[0]);
+                const lng = parseFloat(coords[1]);
+                if (!isNaN(lat) && !isNaN(lng)) {
+                  const clientId = msg.id || msg.user || "client";
+                  updateMarker(clientId, lat, lng);
+                }
               }
             }
           }
