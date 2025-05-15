@@ -102,6 +102,12 @@
       vertical-align: middle;
     }
 
+    #gpsText {
+      margin-top: 10px;
+      font-weight: 500;
+      color: var(--subtle-text);
+    }
+
     @media (max-width: 600px) {
       input[type="text"], select, button {
         width: 100%;
@@ -149,6 +155,11 @@
       <br />
       <button id="videoButton" onclick="toggleLiveVideo()">📷 Start Live Video</button>
     </div>
+
+    <div class="section">
+      <button onclick="getLocation()">📍 Read GPS Location</button>
+      <div id="gpsText">Location: Not read yet</div>
+    </div>
   </div>
 
   <div class="card">
@@ -159,12 +170,6 @@
   <div class="card">
     <h3>🎥 Received Live Video</h3>
     <canvas id="videoCanvas" width="320" height="240"></canvas>
-  </div>
-
-  <div class="card">
-    <h3>📍 GPS Location</h3>
-    <p id="gpsText">Getting location...</p>
-    <button onclick="getLocation()">📡 Refresh Location</button>
   </div>
 
   <script>
@@ -304,30 +309,27 @@
 
     function getLocation() {
       const gpsText = document.getElementById("gpsText");
-
       if (!navigator.geolocation) {
         gpsText.textContent = "Geolocation is not supported by this browser.";
         return;
       }
 
-      navigator.geolocation.getCurrentPosition(
+      const watchId = navigator.geolocation.watchPosition(
         (position) => {
           const { latitude, longitude } = position.coords;
-          gpsText.textContent = `Latitude: ${latitude.toFixed(6)}, Longitude: ${longitude.toFixed(6)}`;
+          gpsText.textContent = `📍 Latitude: ${latitude.toFixed(6)}, Longitude: ${longitude.toFixed(6)}`;
+          navigator.geolocation.clearWatch(watchId);
         },
         (error) => {
-          gpsText.textContent = `Error getting location: ${error.message}`;
+          gpsText.textContent = `❌ Error getting location: ${error.message}`;
         },
         {
           enableHighAccuracy: true,
-          timeout: 10000,
+          timeout: 30000,
           maximumAge: 0
         }
       );
     }
-
-    // Auto fetch GPS on load
-    window.addEventListener("load", getLocation);
   </script>
 </body>
 </html>
