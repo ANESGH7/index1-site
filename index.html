@@ -2,8 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>WebSocket Chat with Live Video</title>
+  <title>WebSocket Chat with Live Video + GPS Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <!-- Leaflet JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  ></script>
+
   <style>
     :root {
       --primary: #2563eb;
@@ -91,21 +102,11 @@
       border: 1px solid var(--border);
     }
 
-    label {
-      font-weight: 500;
-      margin-right: 10px;
-      display: inline-block;
+    #map {
+      height: 300px;
+      width: 100%;
+      border-radius: var(--radius);
       margin-top: 10px;
-    }
-
-    #fpsSlider {
-      vertical-align: middle;
-    }
-
-    #gpsText {
-      margin-top: 10px;
-      font-weight: 500;
-      color: var(--subtle-text);
     }
 
     @media (max-width: 600px) {
@@ -155,11 +156,6 @@
       <br />
       <button id="videoButton" onclick="toggleLiveVideo()">📷 Start Live Video</button>
     </div>
-
-    <div class="section">
-      <button onclick="getLocation()">📍 Read GPS Location</button>
-      <div id="gpsText">Location: Not read yet</div>
-    </div>
   </div>
 
   <div class="card">
@@ -172,6 +168,13 @@
     <canvas id="videoCanvas" width="320" height="240"></canvas>
   </div>
 
+  <div class="card">
+    <h3>📍 GPS Location</h3>
+    <button onclick="getLocation()">📍 Read GPS Location</button>
+    <p id="gpsText">GPS data will appear here.</p>
+    <div id="map"></div>
+  </div>
+
   <script>
     const ws = new WebSocket("wss://chat-643f.onrender.com");
     ws.binaryType = "arraybuffer";
@@ -179,6 +182,7 @@
     let sendingVideo = false;
     let videoInterval = null;
     let activeStream = null;
+    let map, marker;
 
     ws.onopen = () => {
       logMessage("✅ Connected to WebSocket server");
@@ -240,7 +244,6 @@
         clearInterval(videoInterval);
         sendingVideo = false;
         button.textContent = "📷 Start Live Video";
-
         if (activeStream) {
           activeStream.getTracks().forEach(track => track.stop());
         }
@@ -253,11 +256,9 @@
       try {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         activeStream = stream;
-
         const video = document.createElement("video");
         video.srcObject = stream;
         await video.play();
-
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
 
@@ -266,7 +267,6 @@
 
         videoInterval = setInterval(() => {
           if (!currentRoom || video.videoWidth === 0 || video.videoHeight === 0) return;
-
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -309,16 +309,29 @@
 
     function getLocation() {
       const gpsText = document.getElementById("gpsText");
+
       if (!navigator.geolocation) {
         gpsText.textContent = "Geolocation is not supported by this browser.";
         return;
       }
 
-      const watchId = navigator.geolocation.watchPosition(
+      navigator.geolocation.getCurrentPosition(
         (position) => {
           const { latitude, longitude } = position.coords;
           gpsText.textContent = `📍 Latitude: ${latitude.toFixed(6)}, Longitude: ${longitude.toFixed(6)}`;
-          navigator.geolocation.clearWatch(watchId);
+
+          if (!map) {
+            map = L.map("map").setView([latitude, longitude], 15);
+            L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+              attribution: '&copy; OpenStreetMap contributors',
+            }).addTo(map);
+
+            marker = L.marker([latitude, longitude]).addTo(map)
+              .bindPopup("📍 You are here").openPopup();
+          } else {
+            map.setView([latitude, longitude], 15);
+            marker.setLatLng([latitude, longitude]);
+          }
         },
         (error) => {
           gpsText.textContent = `❌ Error getting location: ${error.message}`;
@@ -326,7 +339,7 @@
         {
           enableHighAccuracy: true,
           timeout: 30000,
-          maximumAge: 0
+          maximumAge: 0,
         }
       );
     }
