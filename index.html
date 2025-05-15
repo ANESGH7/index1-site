@@ -161,7 +161,12 @@
     <canvas id="videoCanvas" width="320" height="240"></canvas>
   </div>
 
-  <!-- JavaScript code remains unchanged -->
+  <div class="card">
+    <h3>📍 GPS Location</h3>
+    <p id="gpsText">Getting location...</p>
+    <button onclick="getLocation()">📡 Refresh Location</button>
+  </div>
+
   <script>
     const ws = new WebSocket("wss://chat-643f.onrender.com");
     ws.binaryType = "arraybuffer";
@@ -296,6 +301,33 @@
     document.getElementById("fpsSlider").addEventListener("input", (e) => {
       document.getElementById("fpsValue").textContent = e.target.value;
     });
+
+    function getLocation() {
+      const gpsText = document.getElementById("gpsText");
+
+      if (!navigator.geolocation) {
+        gpsText.textContent = "Geolocation is not supported by this browser.";
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          gpsText.textContent = `Latitude: ${latitude.toFixed(6)}, Longitude: ${longitude.toFixed(6)}`;
+        },
+        (error) => {
+          gpsText.textContent = `Error getting location: ${error.message}`;
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        }
+      );
+    }
+
+    // Auto fetch GPS on load
+    window.addEventListener("load", getLocation);
   </script>
 </body>
 </html>
