@@ -5,10 +5,11 @@
   <title>WebSocket Chat + Video + GPS</title>
   <style>
     body { font-family: Arial; padding: 20px; }
-    #messageLog { border: 1px solid #ccc; height: 200px; overflow-y: auto; margin-bottom: 20px; padding: 10px; }
+    #messageLog { border: 1px solid #ccc; height: 200px; overflow-y: auto; margin-bottom: 10px; padding: 10px; }
     canvas { max-width: 100%; border: 1px solid #ccc; }
     .section { margin-bottom: 20px; }
     #map { height: 300px; border: 1px solid #ccc; }
+    input[type="number"] { width: 60px; }
   </style>
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
 </head>
@@ -24,6 +25,7 @@
   <div class="section">
     <input type="text" id="textMessage" placeholder="Enter message" />
     <button onclick="sendMessage()">Send Message</button>
+    <button onclick="clearMessages()">🧹 Clear Messages</button>
   </div>
 
   <div class="section">
@@ -46,6 +48,8 @@
   </div>
 
   <div class="section">
+    <label><strong>GPS Update Interval (seconds):</strong></label>
+    <input type="number" id="gpsIntervalInput" min="1" value="1" />
     <button onclick="startGps()">📍 Start GPS</button>
     <div id="gpsDisplay">Location: N/A</div>
   </div>
@@ -97,7 +101,6 @@
                 const lat = parseFloat(match[1]);
                 const lng = parseFloat(match[2]);
                 const id = msg.text.split("&")[1]?.trim() || "unknown";
-
                 updateClientMarker(id, lat, lng);
               }
             }
@@ -142,6 +145,10 @@
       if (!text || !currentRoom) return;
       ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text }));
       document.getElementById("textMessage").value = "";
+    }
+
+    function clearMessages() {
+      document.getElementById("messageLog").innerHTML = "";
     }
 
     async function toggleLiveVideo() {
@@ -203,7 +210,11 @@
     }
 
     function startGps() {
-      if (gpsInterval) return;
+      if (gpsInterval) clearInterval(gpsInterval);
+
+      const intervalSec = parseInt(document.getElementById("gpsIntervalInput").value);
+      const delay = Math.max(intervalSec, 1) * 1000;
+
       gpsInterval = setInterval(() => {
         if (!navigator.geolocation || !currentRoom) return;
         navigator.geolocation.getCurrentPosition(pos => {
@@ -213,7 +224,7 @@
           document.getElementById("gpsDisplay").textContent = `Location: ${lat}, ${lng}`;
           ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text }));
         });
-      }, 1000);
+      }, delay);
     }
 
     function updateClientMarker(id, lat, lng) {
