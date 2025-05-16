@@ -74,7 +74,7 @@
     let videoInterval = null;
     let gpsTimer = null;
     let voiceStream = null;
-    let voiceInterval = null;
+    let voiceRecorder = null;
     const clientMarkers = new Map();
 
     ws.binaryType = "arraybuffer";
@@ -95,15 +95,22 @@
           log("💬 " + msg.text);
         }
       } else {
-        // Handle binary (video or audio)
-        audioCtx.decodeAudioData(event.data.slice(0)).then(buffer => {
-          const source = audioCtx.createBufferSource();
-          source.buffer = buffer;
-          source.connect(audioCtx.destination);
-          source.start();
-        }).catch(() => {
-          // fallback for video
-          const blob = new Blob([event.data], { type: "image/jpeg" });
+        const dataView = new DataView(event.data);
+        const typeFlag = String.fromCharCode(...new Uint8Array(event.data.slice(0, 5)));
+
+        const payload = event.data.slice(5); // Remove 5-byte header
+
+        if (typeFlag === "AUDIO") {
+          audioCtx.decodeAudioData(payload).then(buffer => {
+            const source = audioCtx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioCtx.destination);
+            source.start();
+          }).catch(err => {
+            console.warn("Audio decode error:", err);
+          });
+        } else if (typeFlag === "VIDEO") {
+          const blob = new Blob([payload], { type: "image/jpeg" });
           const img = new Image();
           img.onload = () => {
             const canvas = document.getElementById("videoCanvas");
@@ -113,7 +120,7 @@
             ctx.drawImage(img, 0, 0);
           };
           img.src = URL.createObjectURL(blob);
-        });
+        }
       }
     };
 
@@ -156,9 +163,7 @@
       }
 
       const fps = parseInt(document.getElementById("fpsSlider").value);
-      const constraints = {
-        video: getVideoConstraints()
-      };
+      const constraints = { video: getVideoConstraints() };
 
       navigator.mediaDevices.getUserMedia(constraints).then(stream => {
         activeStream = stream;
@@ -175,8 +180,13 @@
           canvas.height = video.videoHeight;
           ctx.drawImage(video, 0, 0);
           canvas.toBlob(blob => {
-            ws.send(JSON.stringify({ type: "binary-image", roomName: currentRoom }));
-            blob.arrayBuffer().then(buf => ws.send(buf));
+            const header = new TextEncoder().encode("VIDEO");
+            blob.arrayBuffer().then(buf => {
+              const full = new Uint8Array(header.length + buf.byteLength);
+              full.set(header, 0);
+              full.set(new Uint8Array(buf), header.length);
+              ws.send(full);
+            });
           }, "image/jpeg", 0.6);
         }, 1000 / fps);
 
@@ -219,22 +229,32 @@
     }
 
     function toggleVoiceCall() {
-      if (voiceStream) {
-        clearInterval(voiceInterval);
-        voiceStream.getTracks().forEach(t => t.stop());
-        voiceStream = null;
+      if (voiceRecorder) {
+        voiceRecorder.stop();
+        voiceStream?.getTracks().forEach(t => t.stop());
+        voiceRecorder = null;
         return;
       }
 
       navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
         voiceStream = stream;
-        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-        mediaRecorder.ondataavailable = e => {
-          if (currentRoom && e.data.size > 0) {
-            e.data.arrayBuffer().then(buf => ws.send(buf));
+        voiceRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+
+        voiceRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0 && currentRoom) {
+            e.data.arrayBuffer().then(buf => {
+              const header = new TextEncoder().encode("AUDIO");
+              const full = new Uint8Array(header.length + buf.byteLength);
+              full.set(header, 0);
+              full.set(new Uint8Array(buf), header.length);
+              ws.send(full);
+            });
           }
         };
-        mediaRecorder.start(500); // send every 500ms
+
+        voiceRecorder.start(500); // every 500ms
+      }).catch(err => {
+        log("🎤 Microphone error: " + err.message);
       });
     }
 
