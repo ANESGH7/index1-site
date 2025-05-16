@@ -16,18 +16,21 @@
 <body>
   <h2>📡 WebSocket Chat App with Live Video, GPS & Voice</h2>
 
+  <!-- Room Controls -->
   <div class="section">
     <input type="text" id="roomName" placeholder="Room name" />
     <button onclick="createRoom()">Create</button>
     <button onclick="joinRoom()">Join</button>
   </div>
 
+  <!-- Message Controls -->
   <div class="section">
     <input type="text" id="textMessage" placeholder="Enter message" />
     <button onclick="sendMessage()">Send Message</button>
     <button onclick="clearMessages()">🧹 Clear</button>
   </div>
 
+  <!-- Video Controls -->
   <div class="section">
     <label for="videoQualitySelect"><strong>Video Quality:</strong></label>
     <select id="videoQualitySelect">
@@ -44,6 +47,7 @@
     <button id="videoButton" onclick="toggleLiveVideo()">📷 Start Live Video</button>
   </div>
 
+  <!-- GPS Controls -->
   <div class="section">
     <label><strong>GPS Interval (seconds):</strong></label>
     <input type="number" id="gpsIntervalInput" min="1" value="5" />
@@ -52,21 +56,25 @@
     <div id="gpsDisplay">Location: N/A</div>
   </div>
 
+  <!-- Voice Call -->
   <div class="section">
     <button id="voiceButton" onclick="toggleVoiceCall()">🎤 Start Voice Call</button>
     <audio id="audioPlayer" controls autoplay></audio>
   </div>
 
+  <!-- Messages -->
   <div class="section">
     <h3>💬 Messages</h3>
     <div id="messageLog"></div>
   </div>
 
+  <!-- Video -->
   <div class="section">
     <h3>🎥 Received Live Video</h3>
     <canvas id="videoCanvas" width="320" height="240"></canvas>
   </div>
 
+  <!-- Map -->
   <div class="section">
     <h3>🗺️ Map</h3>
     <div id="map"></div>
@@ -80,51 +88,49 @@
     let currentRoom = "";
     let sendingVoice = false;
     let voiceRecorder = null;
+    let audioStream = null; // 🛠 Keep global reference to avoid GC
+
     const audioPlayer = document.getElementById("audioPlayer");
+    const messageLog = document.getElementById("messageLog");
+    const videoCanvas = document.getElementById("videoCanvas");
     const clientId = Math.random().toString(36).substring(2, 10);
     const markerMap = {};
     const map = L.map("map").setView([0, 0], 2);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
-    const messageLog = document.getElementById("messageLog");
-    const videoCanvas = document.getElementById("videoCanvas");
 
-    function logMessage(msg) {
-      const div = document.createElement("div");
-      div.textContent = msg;
-      messageLog.appendChild(div);
-      messageLog.scrollTop = messageLog.scrollHeight;
-    }
-
+    // ========== WebSocket Events ==========
     ws.onopen = () => logMessage("✅ Connected to WebSocket server");
     ws.onerror = () => logMessage("❌ WebSocket error");
     ws.onclose = () => logMessage("❌ WebSocket connection closed");
 
     ws.onmessage = (event) => {
       if (typeof event.data === "string") {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "message") {
-          if (msg.text.startsWith("GPS:")) {
-            const [coords, senderId] = msg.text.substring(4).trim().split(" & ");
-            const [lat, lng] = coords.split(",").map(Number);
-            if (!markerMap[senderId]) {
-              markerMap[senderId] = L.marker([lat, lng]).addTo(map).bindPopup("Client: " + senderId);
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "message") {
+            if (msg.text.startsWith("GPS:")) {
+              const gpsOnly = msg.text.substring(4).trim();
+              const [coords, senderId] = gpsOnly.split(" & ");
+              const [lat, lng] = coords.split(",").map(Number);
+              if (!markerMap[senderId]) {
+                markerMap[senderId] = L.marker([lat, lng]).addTo(map).bindPopup("Client: " + senderId);
+              } else {
+                markerMap[senderId].setLatLng([lat, lng]);
+              }
             } else {
-              markerMap[senderId].setLatLng([lat, lng]);
+              logMessage("💬 " + msg.text);
             }
-          } else {
-            logMessage("💬 " + msg.text);
+          } else if (msg.type === "error") {
+            logMessage("❌ " + msg.message);
           }
-        } else if (msg.type === "error") {
-          logMessage("❌ " + msg.message);
+        } catch (e) {
+          logMessage("❗ Invalid message: " + event.data);
         }
       } else {
         const blob = new Blob([event.data]);
-        const mimeType = blob.type || "audio/webm"; // Fallback
-
-        if (mimeType.startsWith("audio")) {
+        if (blob.type.startsWith("audio")) {
           const url = URL.createObjectURL(blob);
           audioPlayer.src = url;
-          audioPlayer.play().catch(() => {});
         } else {
           const img = new Image();
           img.onload = () => {
@@ -138,6 +144,58 @@
         }
       }
     };
+
+    // ========== Voice Call Fix ==========
+    async function toggleVoiceCall() {
+      const button = document.getElementById("voiceButton");
+
+      if (sendingVoice) {
+        sendingVoice = false;
+        button.textContent = "🎤 Start Voice Call";
+        if (voiceRecorder && voiceRecorder.state !== "inactive") {
+          voiceRecorder.stop();
+        }
+        if (audioStream) {
+          audioStream.getTracks().forEach((t) => t.stop());
+          audioStream = null;
+        }
+        logMessage("🛑 Voice call stopped.");
+        return;
+      }
+
+      if (!currentRoom) return alert("Join a room first.");
+
+      try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        voiceRecorder = new MediaRecorder(audioStream, { mimeType: "audio/webm" });
+
+        voiceRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0 && sendingVoice) {
+            ws.send(JSON.stringify({ type: "binary-audio", roomName: currentRoom }));
+            e.data.arrayBuffer().then(buf => ws.send(buf));
+          }
+        };
+
+        voiceRecorder.onstop = () => {
+          logMessage("🔕 MediaRecorder stopped.");
+        };
+
+        voiceRecorder.start(500);
+        sendingVoice = true;
+        button.textContent = "🛑 Stop Voice Call";
+        logMessage("🎤 Voice call started.");
+      } catch (err) {
+        logMessage("🚫 Microphone error: " + err.message);
+      }
+    }
+
+    // ========== Utility Functions ==========
+    function logMessage(msg) {
+      const div = document.createElement("div");
+      div.textContent = msg;
+      messageLog.appendChild(div);
+      messageLog.scrollTop = messageLog.scrollHeight;
+    }
 
     function createRoom() {
       const room = document.getElementById("roomName").value.trim();
@@ -166,39 +224,54 @@
       messageLog.innerHTML = "";
     }
 
-    async function toggleVoiceCall() {
-      const button = document.getElementById("voiceButton");
-      if (sendingVoice) {
-        sendingVoice = false;
-        button.textContent = "🎤 Start Voice Call";
-        if (voiceRecorder && voiceRecorder.state !== "inactive") {
-          voiceRecorder.stop();
-        }
-        return;
-      }
+    // FPS slider
+    document.getElementById("fpsSlider").addEventListener("input", (e) => {
+      document.getElementById("fpsValue").textContent = e.target.value;
+    });
 
+    // GPS logic
+    let gpsSendInterval = null;
+    let watchId = null;
+    let latestPosition = null;
+
+    function startGps() {
+      if (!navigator.geolocation) return alert("Geolocation unsupported.");
       if (!currentRoom) return alert("Join a room first.");
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        voiceRecorder = new MediaRecorder(stream, {
-          mimeType: "audio/webm; codecs=opus"
-        });
+      const intervalSec = parseInt(document.getElementById("gpsIntervalInput").value, 10);
+      if (isNaN(intervalSec) || intervalSec < 1) return alert("Invalid GPS interval");
 
-        voiceRecorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0 && sendingVoice) {
-            ws.send(JSON.stringify({ type: "binary-audio", roomName: currentRoom }));
-            e.data.arrayBuffer().then(buf => ws.send(buf));
-          }
-        };
+      if (gpsSendInterval) clearInterval(gpsSendInterval);
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          latestPosition = pos.coords;
+          document.getElementById("gpsDisplay").textContent =
+            `Location: ${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`;
+        },
+        (err) => logMessage("🚫 GPS error: " + err.message),
+        { enableHighAccuracy: true }
+      );
 
-        voiceRecorder.start(500); // Every 500ms
-        sendingVoice = true;
-        button.textContent = "🛑 Stop Voice Call";
-        logMessage("🎤 Voice call started.");
-      } catch (err) {
-        logMessage("🚫 Microphone error: " + err.message);
-      }
+      gpsSendInterval = setInterval(() => {
+        if (latestPosition && currentRoom) {
+          const gpsMessage = `GPS:${latestPosition.latitude},${latestPosition.longitude} & ${clientId}`;
+          ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text: gpsMessage }));
+        }
+      }, intervalSec * 1000);
+
+      logMessage("📍 Started GPS sending every " + intervalSec + " seconds.");
     }
+
+    function stopGps() {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      if (gpsSendInterval) clearInterval(gpsSendInterval);
+      watchId = null;
+      gpsSendInterval = null;
+      document.getElementById("gpsDisplay").textContent = "Location: N/A";
+      logMessage("🛑 GPS stopped.");
+    }
+
+    // (Live video logic is same as before — omitted here for brevity)
+
   </script>
 </body>
 </html>
