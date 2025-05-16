@@ -78,61 +78,53 @@
     ws.binaryType = "arraybuffer";
 
     let currentRoom = "";
-    let sendingVideo = false;
     let sendingVoice = false;
-    let videoInterval = null;
-    let activeStream = null;
     let voiceRecorder = null;
-    let gpsSendInterval = null;
-    let watchId = null;
-    let latestPosition = null;
+    const audioPlayer = document.getElementById("audioPlayer");
     const clientId = Math.random().toString(36).substring(2, 10);
     const markerMap = {};
-    const audioPlayer = document.getElementById("audioPlayer");
-
     const map = L.map("map").setView([0, 0], 2);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
-
     const messageLog = document.getElementById("messageLog");
     const videoCanvas = document.getElementById("videoCanvas");
 
+    function logMessage(msg) {
+      const div = document.createElement("div");
+      div.textContent = msg;
+      messageLog.appendChild(div);
+      messageLog.scrollTop = messageLog.scrollHeight;
+    }
+
     ws.onopen = () => logMessage("✅ Connected to WebSocket server");
-
     ws.onerror = () => logMessage("❌ WebSocket error");
-
     ws.onclose = () => logMessage("❌ WebSocket connection closed");
 
     ws.onmessage = (event) => {
       if (typeof event.data === "string") {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "message") {
-            if (msg.text.startsWith("GPS:")) {
-              const gpsOnly = msg.text.substring(4).trim();
-              const [coords, senderId] = gpsOnly.split(" & ");
-              if (!coords || !senderId) return;
-              const [lat, lng] = coords.split(",").map(Number);
-              if (isNaN(lat) || isNaN(lng)) return;
-              if (!markerMap[senderId]) {
-                markerMap[senderId] = L.marker([lat, lng]).addTo(map).bindPopup("Client: " + senderId);
-              } else {
-                markerMap[senderId].setLatLng([lat, lng]);
-              }
+        const msg = JSON.parse(event.data);
+        if (msg.type === "message") {
+          if (msg.text.startsWith("GPS:")) {
+            const [coords, senderId] = msg.text.substring(4).trim().split(" & ");
+            const [lat, lng] = coords.split(",").map(Number);
+            if (!markerMap[senderId]) {
+              markerMap[senderId] = L.marker([lat, lng]).addTo(map).bindPopup("Client: " + senderId);
             } else {
-              logMessage("💬 " + msg.text);
+              markerMap[senderId].setLatLng([lat, lng]);
             }
-          } else if (msg.type === "error") {
-            logMessage("❌ " + msg.message);
+          } else {
+            logMessage("💬 " + msg.text);
           }
-        } catch (e) {
-          logMessage("❗ Invalid message: " + event.data);
+        } else if (msg.type === "error") {
+          logMessage("❌ " + msg.message);
         }
       } else {
-        // Binary: try to play as image or audio
         const blob = new Blob([event.data]);
-        if (blob.type.startsWith("audio")) {
+        const mimeType = blob.type || "audio/webm"; // Fallback
+
+        if (mimeType.startsWith("audio")) {
           const url = URL.createObjectURL(blob);
           audioPlayer.src = url;
+          audioPlayer.play().catch(() => {});
         } else {
           const img = new Image();
           img.onload = () => {
@@ -146,13 +138,6 @@
         }
       }
     };
-
-    function logMessage(msg) {
-      const div = document.createElement("div");
-      div.textContent = msg;
-      messageLog.appendChild(div);
-      messageLog.scrollTop = messageLog.scrollHeight;
-    }
 
     function createRoom() {
       const room = document.getElementById("roomName").value.trim();
@@ -181,105 +166,6 @@
       messageLog.innerHTML = "";
     }
 
-    async function toggleLiveVideo() {
-      const button = document.getElementById("videoButton");
-      if (sendingVideo) {
-        clearInterval(videoInterval);
-        sendingVideo = false;
-        button.textContent = "📷 Start Live Video";
-        if (activeStream) activeStream.getTracks().forEach((t) => t.stop());
-        activeStream = null;
-        return;
-      }
-
-      if (!currentRoom) return alert("Join a room first.");
-      const constraints = getVideoConstraints();
-      const fps = parseInt(document.getElementById("fpsSlider").value, 10);
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        activeStream = stream;
-        const video = document.createElement("video");
-        video.srcObject = stream;
-        await video.play();
-
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
-
-        sendingVideo = true;
-        button.textContent = "🛑 Stop Live Video";
-
-        videoInterval = setInterval(() => {
-          if (!currentRoom || video.videoWidth === 0) return;
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob((blob) => {
-            if (!blob) return;
-            ws.send(JSON.stringify({ type: "binary-image", roomName: currentRoom }));
-            setTimeout(() => blob.arrayBuffer().then((buf) => ws.send(buf)), 20);
-          }, "image/jpeg", 0.6);
-        }, 1000 / fps);
-      } catch (err) {
-        logMessage("🚫 Camera error: " + err.message);
-      }
-    }
-
-    function getVideoConstraints() {
-      const quality = document.getElementById("videoQualitySelect").value;
-      const map = {
-        veryLow120p: { width: 160, height: 120, frameRate: 10 },
-        low240p: { width: 426, height: 240, frameRate: 15 },
-        low360p: { width: 640, height: 360, frameRate: 15 },
-        low480p: { width: 854, height: 480, frameRate: 20 },
-        medium: { width: 1280, height: 720, frameRate: 30 },
-        high: { width: 1920, height: 1080, frameRate: 30 }
-      };
-      return { video: map[quality] || map.medium };
-    }
-
-    document.getElementById("fpsSlider").addEventListener("input", (e) => {
-      document.getElementById("fpsValue").textContent = e.target.value;
-    });
-
-    function startGps() {
-      if (!navigator.geolocation) return alert("Geolocation unsupported.");
-      if (!currentRoom) return alert("Join a room first.");
-
-      const intervalSec = parseInt(document.getElementById("gpsIntervalInput").value, 10);
-      if (isNaN(intervalSec) || intervalSec < 1) return alert("Invalid GPS interval");
-
-      if (gpsSendInterval) clearInterval(gpsSendInterval);
-
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          latestPosition = pos.coords;
-          document.getElementById("gpsDisplay").textContent =
-            `Location: ${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`;
-        },
-        (err) => logMessage("🚫 GPS error: " + err.message),
-        { enableHighAccuracy: true }
-      );
-
-      gpsSendInterval = setInterval(() => {
-        if (latestPosition && currentRoom) {
-          const gpsMessage = `GPS:${latestPosition.latitude},${latestPosition.longitude} & ${clientId}`;
-          ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text: gpsMessage }));
-        }
-      }, intervalSec * 1000);
-
-      logMessage("📍 Started GPS sending every " + intervalSec + " seconds.");
-    }
-
-    function stopGps() {
-      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-      if (gpsSendInterval) clearInterval(gpsSendInterval);
-      watchId = null;
-      gpsSendInterval = null;
-      document.getElementById("gpsDisplay").textContent = "Location: N/A";
-      logMessage("🛑 GPS stopped.");
-    }
-
     async function toggleVoiceCall() {
       const button = document.getElementById("voiceButton");
       if (sendingVoice) {
@@ -294,7 +180,9 @@
       if (!currentRoom) return alert("Join a room first.");
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        voiceRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+        voiceRecorder = new MediaRecorder(stream, {
+          mimeType: "audio/webm; codecs=opus"
+        });
 
         voiceRecorder.ondataavailable = (e) => {
           if (e.data && e.data.size > 0 && sendingVoice) {
@@ -303,7 +191,7 @@
           }
         };
 
-        voiceRecorder.start(500); // chunk every 500ms
+        voiceRecorder.start(500); // Every 500ms
         sendingVoice = true;
         button.textContent = "🛑 Stop Voice Call";
         logMessage("🎤 Voice call started.");
