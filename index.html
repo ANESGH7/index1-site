@@ -1,3 +1,5 @@
+<!-- Full working HTML with WebSocket video, audio, GPS -->
+<!-- Save as index.html and open in browser -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,21 +18,18 @@
 <body>
   <h2>📡 WebSocket Chat App with Live Video, GPS & Voice</h2>
 
-  <!-- Room Controls -->
   <div class="section">
     <input type="text" id="roomName" placeholder="Room name" />
     <button onclick="createRoom()">Create</button>
     <button onclick="joinRoom()">Join</button>
   </div>
 
-  <!-- Message Controls -->
   <div class="section">
     <input type="text" id="textMessage" placeholder="Enter message" />
     <button onclick="sendMessage()">Send Message</button>
     <button onclick="clearMessages()">🧹 Clear</button>
   </div>
 
-  <!-- Video Controls -->
   <div class="section">
     <label for="videoQualitySelect"><strong>Video Quality:</strong></label>
     <select id="videoQualitySelect">
@@ -47,7 +46,6 @@
     <button id="videoButton" onclick="toggleLiveVideo()">📷 Start Live Video</button>
   </div>
 
-  <!-- GPS Controls -->
   <div class="section">
     <label><strong>GPS Interval (seconds):</strong></label>
     <input type="number" id="gpsIntervalInput" min="1" value="5" />
@@ -56,25 +54,21 @@
     <div id="gpsDisplay">Location: N/A</div>
   </div>
 
-  <!-- Voice Call -->
   <div class="section">
     <button id="voiceButton" onclick="toggleVoiceCall()">🎤 Start Voice Call</button>
     <audio id="audioPlayer" controls autoplay></audio>
   </div>
 
-  <!-- Messages -->
   <div class="section">
     <h3>💬 Messages</h3>
     <div id="messageLog"></div>
   </div>
 
-  <!-- Video -->
   <div class="section">
     <h3>🎥 Received Live Video</h3>
     <canvas id="videoCanvas" width="320" height="240"></canvas>
   </div>
 
-  <!-- Map -->
   <div class="section">
     <h3>🗺️ Map</h3>
     <div id="map"></div>
@@ -88,8 +82,9 @@
     let currentRoom = "";
     let sendingVoice = false;
     let voiceRecorder = null;
-    let audioStream = null; // 🛠 Keep global reference to avoid GC
-
+    let audioStream = null;
+    let videoStream = null;
+    let videoInterval = null;
     const audioPlayer = document.getElementById("audioPlayer");
     const messageLog = document.getElementById("messageLog");
     const videoCanvas = document.getElementById("videoCanvas");
@@ -98,39 +93,30 @@
     const map = L.map("map").setView([0, 0], 2);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
 
-    // ========== WebSocket Events ==========
     ws.onopen = () => logMessage("✅ Connected to WebSocket server");
     ws.onerror = () => logMessage("❌ WebSocket error");
-    ws.onclose = () => logMessage("❌ WebSocket connection closed");
+    ws.onclose = () => logMessage("❌ Disconnected");
 
     ws.onmessage = (event) => {
       if (typeof event.data === "string") {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "message") {
-            if (msg.text.startsWith("GPS:")) {
-              const gpsOnly = msg.text.substring(4).trim();
-              const [coords, senderId] = gpsOnly.split(" & ");
-              const [lat, lng] = coords.split(",").map(Number);
-              if (!markerMap[senderId]) {
-                markerMap[senderId] = L.marker([lat, lng]).addTo(map).bindPopup("Client: " + senderId);
-              } else {
-                markerMap[senderId].setLatLng([lat, lng]);
-              }
+        const msg = JSON.parse(event.data);
+        if (msg.type === "message") {
+          if (msg.text.startsWith("GPS:")) {
+            const [coords, senderId] = msg.text.substring(4).split(" & ");
+            const [lat, lng] = coords.split(",").map(Number);
+            if (!markerMap[senderId]) {
+              markerMap[senderId] = L.marker([lat, lng]).addTo(map).bindPopup("Client: " + senderId);
             } else {
-              logMessage("💬 " + msg.text);
+              markerMap[senderId].setLatLng([lat, lng]);
             }
-          } else if (msg.type === "error") {
-            logMessage("❌ " + msg.message);
+          } else {
+            logMessage("💬 " + msg.text);
           }
-        } catch (e) {
-          logMessage("❗ Invalid message: " + event.data);
         }
       } else {
         const blob = new Blob([event.data]);
         if (blob.type.startsWith("audio")) {
-          const url = URL.createObjectURL(blob);
-          audioPlayer.src = url;
+          audioPlayer.src = URL.createObjectURL(blob);
         } else {
           const img = new Image();
           img.onload = () => {
@@ -145,41 +131,28 @@
       }
     };
 
-    // ========== Voice Call Fix ==========
     async function toggleVoiceCall() {
       const button = document.getElementById("voiceButton");
-
       if (sendingVoice) {
         sendingVoice = false;
         button.textContent = "🎤 Start Voice Call";
-        if (voiceRecorder && voiceRecorder.state !== "inactive") {
-          voiceRecorder.stop();
-        }
-        if (audioStream) {
-          audioStream.getTracks().forEach((t) => t.stop());
-          audioStream = null;
-        }
+        if (voiceRecorder) voiceRecorder.stop();
+        if (audioStream) audioStream.getTracks().forEach(t => t.stop());
+        audioStream = null;
         logMessage("🛑 Voice call stopped.");
         return;
       }
 
       if (!currentRoom) return alert("Join a room first.");
-
       try {
         audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         voiceRecorder = new MediaRecorder(audioStream, { mimeType: "audio/webm" });
-
         voiceRecorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0 && sendingVoice) {
+          if (e.data.size > 0 && sendingVoice) {
             ws.send(JSON.stringify({ type: "binary-audio", roomName: currentRoom }));
             e.data.arrayBuffer().then(buf => ws.send(buf));
           }
         };
-
-        voiceRecorder.onstop = () => {
-          logMessage("🔕 MediaRecorder stopped.");
-        };
-
         voiceRecorder.start(500);
         sendingVoice = true;
         button.textContent = "🛑 Stop Voice Call";
@@ -189,47 +162,61 @@
       }
     }
 
-    // ========== Utility Functions ==========
-    function logMessage(msg) {
-      const div = document.createElement("div");
-      div.textContent = msg;
-      messageLog.appendChild(div);
-      messageLog.scrollTop = messageLog.scrollHeight;
+    function toggleLiveVideo() {
+      const btn = document.getElementById("videoButton");
+      if (videoInterval) {
+        clearInterval(videoInterval);
+        videoInterval = null;
+        if (videoStream) {
+          videoStream.getTracks().forEach(t => t.stop());
+        }
+        btn.textContent = "📷 Start Live Video";
+        logMessage("🛑 Video stopped");
+        return;
+      }
+
+      if (!currentRoom) return alert("Join a room first.");
+
+      navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+        videoStream = stream;
+        const video = document.createElement("video");
+        video.srcObject = stream;
+        video.play();
+
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+
+        const fps = parseInt(document.getElementById("fpsSlider").value);
+        const quality = document.getElementById("videoQualitySelect").value;
+        const sizeMap = {
+          veryLow120p: [160, 120],
+          low240p: [320, 240],
+          low360p: [480, 360],
+          low480p: [640, 480],
+          medium: [1280, 720],
+          high: [1920, 1080],
+        };
+
+        const [w, h] = sizeMap[quality];
+        canvas.width = w;
+        canvas.height = h;
+
+        videoInterval = setInterval(() => {
+          ctx.drawImage(video, 0, 0, w, h);
+          canvas.toBlob((blob) => {
+            if (blob) {
+              ws.send(JSON.stringify({ type: "binary-video", roomName: currentRoom }));
+              blob.arrayBuffer().then((buf) => ws.send(buf));
+            }
+          }, "image/jpeg", 0.5);
+        }, 1000 / fps);
+
+        btn.textContent = "🛑 Stop Live Video";
+        logMessage("🎥 Video started");
+      });
     }
 
-    function createRoom() {
-      const room = document.getElementById("roomName").value.trim();
-      if (!room) return alert("Enter a room name.");
-      currentRoom = room;
-      ws.send(JSON.stringify({ type: "create", roomName: room }));
-      logMessage("📂 Created room: " + room);
-    }
-
-    function joinRoom() {
-      const room = document.getElementById("roomName").value.trim();
-      if (!room) return alert("Enter a room name.");
-      currentRoom = room;
-      ws.send(JSON.stringify({ type: "join", roomName: room }));
-      logMessage("📥 Joined room: " + room);
-    }
-
-    function sendMessage() {
-      const text = document.getElementById("textMessage").value.trim();
-      if (!text || !currentRoom) return;
-      ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text }));
-      document.getElementById("textMessage").value = "";
-    }
-
-    function clearMessages() {
-      messageLog.innerHTML = "";
-    }
-
-    // FPS slider
-    document.getElementById("fpsSlider").addEventListener("input", (e) => {
-      document.getElementById("fpsValue").textContent = e.target.value;
-    });
-
-    // GPS logic
+    // ========== GPS Logic ==========
     let gpsSendInterval = null;
     let watchId = null;
     let latestPosition = null;
@@ -258,7 +245,7 @@
         }
       }, intervalSec * 1000);
 
-      logMessage("📍 Started GPS sending every " + intervalSec + " seconds.");
+      logMessage("📍 Started GPS every " + intervalSec + " seconds.");
     }
 
     function stopGps() {
@@ -270,8 +257,44 @@
       logMessage("🛑 GPS stopped.");
     }
 
-    // (Live video logic is same as before — omitted here for brevity)
+    // Utility
+    function logMessage(msg) {
+      const div = document.createElement("div");
+      div.textContent = msg;
+      messageLog.appendChild(div);
+      messageLog.scrollTop = messageLog.scrollHeight;
+    }
 
+    document.getElementById("fpsSlider").addEventListener("input", (e) => {
+      document.getElementById("fpsValue").textContent = e.target.value;
+    });
+
+    function createRoom() {
+      const room = document.getElementById("roomName").value.trim();
+      if (!room) return alert("Enter a room name.");
+      currentRoom = room;
+      ws.send(JSON.stringify({ type: "create", roomName: room }));
+      logMessage("📂 Created room: " + room);
+    }
+
+    function joinRoom() {
+      const room = document.getElementById("roomName").value.trim();
+      if (!room) return alert("Enter a room name.");
+      currentRoom = room;
+      ws.send(JSON.stringify({ type: "join", roomName: room }));
+      logMessage("📥 Joined room: " + room);
+    }
+
+    function sendMessage() {
+      const text = document.getElementById("textMessage").value.trim();
+      if (!text || !currentRoom) return;
+      ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text }));
+      document.getElementById("textMessage").value = "";
+    }
+
+    function clearMessages() {
+      messageLog.innerHTML = "";
+    }
   </script>
 </body>
 </html>
