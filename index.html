@@ -1,5 +1,3 @@
-<!-- Full working HTML with WebSocket video, audio, GPS -->
-<!-- Save as index.html and open in browser -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -93,17 +91,20 @@
     const map = L.map("map").setView([0, 0], 2);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
 
+    // State for incoming binary frames:
+    let expectingBinary = null; // 'audio' or 'video' or null
+
     ws.onopen = () => logMessage("✅ Connected to WebSocket server");
     ws.onerror = () => logMessage("❌ WebSocket error");
     ws.onclose = () => logMessage("❌ Disconnected");
 
     ws.onmessage = async (event) => {
       if (typeof event.data === "string") {
+        // JSON header message - parse and set expected binary type
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "message") {
             if (msg.text.startsWith("GPS:")) {
-              // Format: "GPS:lat,lng & senderId"
               const [coords, senderId] = msg.text.substring(4).split(" & ");
               const [lat, lng] = coords.split(",").map(Number);
               if (!markerMap[senderId]) {
@@ -114,34 +115,23 @@
             } else {
               logMessage("💬 " + msg.text);
             }
+          } else if (msg.type === "binary-video") {
+            expectingBinary = "video";
+          } else if (msg.type === "binary-audio") {
+            expectingBinary = "audio";
+          } else if (msg.type === "create" || msg.type === "join") {
+            logMessage("ℹ️ " + msg.type + " room: " + msg.roomName);
           }
         } catch (e) {
-          console.warn("Invalid JSON message", e);
+          console.error("JSON parse error:", e);
         }
-      } else {
-        // binary data (audio or video)
-        // The server sends a JSON "type" message first before the binary payload.
-        // Here, we just try to guess from blob MIME type
-
-        const blob = new Blob([event.data]);
-
-        // We can check the first bytes of the blob to distinguish audio vs image
-        // but simpler is to check size and MIME heuristics:
-
-        // We try to detect audio/webm or image/jpeg
-        const arrayBuffer = await blob.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuffer);
-
-        // Simple magic number detection for WebM audio (starts with "RIFF" or "webm"?)
-        // We'll just assume anything small and audio player compatible is audio.
-        // Otherwise treat as image.
-
-        // This is a heuristic:
-        if (blob.type.startsWith("audio") || (blob.size < 50000 && blob.type === "")) {
-          // Treat as audio
+      } else if (event.data instanceof ArrayBuffer) {
+        if (expectingBinary === "audio") {
+          const blob = new Blob([event.data], { type: "audio/webm" });
           audioPlayer.src = URL.createObjectURL(blob);
-        } else {
-          // Treat as image
+          expectingBinary = null;
+        } else if (expectingBinary === "video") {
+          const blob = new Blob([event.data], { type: "image/jpeg" });
           const img = new Image();
           img.onload = () => {
             const ctx = videoCanvas.getContext("2d");
@@ -151,6 +141,9 @@
             URL.revokeObjectURL(img.src);
           };
           img.src = URL.createObjectURL(blob);
+          expectingBinary = null;
+        } else {
+          console.warn("Unexpected binary data received with no expected type");
         }
       }
     };
@@ -171,15 +164,14 @@
       try {
         audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         voiceRecorder = new MediaRecorder(audioStream, { mimeType: "audio/webm" });
-
         voiceRecorder.ondataavailable = (e) => {
           if (e.data.size > 0 && sendingVoice) {
-            // Send JSON marker first
-            ws.send(JSON.stringify({ type: "binary-audio", roomName: currentRoom, clientId }));
+            // Send header first
+            ws.send(JSON.stringify({ type: "binary-audio", roomName: currentRoom }));
+            // Then send audio data
             e.data.arrayBuffer().then(buf => ws.send(buf));
           }
         };
-
         voiceRecorder.start(500);
         sendingVoice = true;
         button.textContent = "🛑 Stop Voice Call";
@@ -233,8 +225,9 @@
           ctx.drawImage(video, 0, 0, w, h);
           canvas.toBlob((blob) => {
             if (blob) {
-              // Send JSON marker first
-              ws.send(JSON.stringify({ type: "binary-video", roomName: currentRoom, clientId }));
+              // Send header first
+              ws.send(JSON.stringify({ type: "binary-video", roomName: currentRoom }));
+              // Then send video blob data
               blob.arrayBuffer().then((buf) => ws.send(buf));
             }
           }, "image/jpeg", 0.5);
@@ -243,7 +236,7 @@
         btn.textContent = "🛑 Stop Live Video";
         logMessage("🎥 Video started");
       }).catch(err => {
-        logMessage("🚫 Camera error: " + err.message);
+        logMessage("🚫 Video error: " + err.message);
       });
     }
 
