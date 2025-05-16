@@ -1,117 +1,50 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <title>WebSocket Chat + Media</title>
-  <style>
-    body { font-family: sans-serif; max-width: 600px; margin: auto; }
-    #chat { height: 200px; overflow-y: auto; border: 1px solid #ccc; padding: 8px; margin-bottom: 8px; }
-    video, audio { max-width: 100%; display: block; margin-top: 10px; }
-  </style>
-</head>
-<body>
-  <h2>Join a Room</h2>
-  <input id="roomName" placeholder="Room name">
-  <button onclick="joinRoom()">Join</button>
+const WebSocket = require('ws');
+const wss = new WebSocket.Server({ port: 8080 });
 
-  <h3>Chat</h3>
-  <div id="chat"></div>
-  <input id="msgInput" placeholder="Type a message">
-  <button onclick="sendMessage()">Send</button>
+console.log("✅ Server running on ws://localhost:8080");
 
-  <h3>Media</h3>
-  <button onclick="sendImage()">Send Image</button>
-  <button onclick="recordAudio()">🎤 Send Voice (3s)</button>
-  <input type="file" id="imageInput" accept="image/*" style="display:none" onchange="handleImage(this.files[0])">
+const rooms = new Map();
 
-  <div id="mediaPreview"></div>
+wss.on('connection', (ws) => {
+  ws.room = null;
 
-  <script>
-    let ws;
-    let room = null;
-
-    function joinRoom() {
-      room = document.getElementById('roomName').value;
-      ws = new WebSocket('ws://localhost:8080');
-
-      ws.binaryType = 'arraybuffer';
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'join', roomName: room }));
-        log(`Joined room: ${room}`);
-      };
-
-      ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'message') {
-            log(`📨 ${msg.text}`);
-          }
-        } else {
-          // Handle binary (image/audio)
-          const buffer = new Uint8Array(event.data);
-          const hex = buffer.slice(0, 4).reduce((s, b) => s + b.toString(16).padStart(2, '0'), '');
-          
-          if (hex.startsWith('ffd8')) {
-            const blob = new Blob([event.data], { type: 'image/jpeg' });
-            const url = URL.createObjectURL(blob);
-            document.getElementById('mediaPreview').innerHTML = `<img src="${url}" style="max-width:100%">`;
-          } else if (hex === '52494646') {
-            const blob = new Blob([event.data], { type: 'audio/wav' });
-            const url = URL.createObjectURL(blob);
-            document.getElementById('mediaPreview').innerHTML = `<audio controls src="${url}"></audio>`;
+  ws.on('message', (data) => {
+    if (typeof data === 'string') {
+      try {
+        const msg = JSON.parse(data);
+        if (msg.type === 'join') {
+          if (!rooms.has(msg.roomName)) rooms.set(msg.roomName, new Set());
+          rooms.get(msg.roomName).add(ws);
+          ws.room = msg.roomName;
+          console.log(`User joined room: ${msg.roomName}`);
+        } else if (msg.type === 'message' || msg.type === 'gps') {
+          if (!ws.room) return;
+          const group = rooms.get(ws.room);
+          for (const client of group) {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify(msg));
+            }
           }
         }
-      };
-
-      ws.onclose = () => log("❎ Disconnected from server");
-    }
-
-    function log(msg) {
-      const div = document.createElement('div');
-      div.textContent = msg;
-      document.getElementById('chat').appendChild(div);
-    }
-
-    function sendMessage() {
-      const text = document.getElementById('msgInput').value;
-      if (ws && text) {
-        ws.send(JSON.stringify({ type: 'message', text }));
-        document.getElementById('msgInput').value = '';
+      } catch (err) {
+        console.error("Bad JSON:", err);
+      }
+    } else if (Buffer.isBuffer(data) && ws.room) {
+      // Binary image blob (JPEG)
+      const group = rooms.get(ws.room);
+      for (const client of group) {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          client.send(data);
+        }
       }
     }
+  });
 
-    function sendImage() {
-      document.getElementById('imageInput').click();
+  ws.on('close', () => {
+    if (ws.room && rooms.has(ws.room)) {
+      rooms.get(ws.room).delete(ws);
+      if (rooms.get(ws.room).size === 0) rooms.delete(ws.room);
     }
-
-    function handleImage(file) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        ws.send(reader.result);
-      };
-      reader.readAsArrayBuffer(file);
-    }
-
-    function recordAudio() {
-      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-        const recorder = new MediaRecorder(stream);
-        const chunks = [];
-
-        recorder.ondataavailable = e => chunks.push(e.data);
-        recorder.onstop = () => {
-          const blob = new Blob(chunks, { type: 'audio/wav' });
-          blob.arrayBuffer().then(buf => ws.send(buf));
-        };
-
-        recorder.start();
-        setTimeout(() => {
-          recorder.stop();
-          stream.getTracks().forEach(t => t.stop());
-        }, 3000); // 3 seconds
-      }).catch(err => {
-        log('🎤 Microphone error: ' + err.message);
-      });
-    }
-  </script>
-</body>
-</html>
+    console.log("Client disconnected.");
+  });
+});
