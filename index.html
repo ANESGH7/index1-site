@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>WebSocket Chat with Live Video, Audio & GPS</title>
+  <title>WebSocket Chat with Live Video + GPS</title>
   <style>
     body { font-family: Arial, sans-serif; padding: 20px; }
     #messageLog { border: 1px solid #ccc; padding: 10px; height: 150px; overflow-y: auto; margin-bottom: 10px; }
@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
 </head>
 <body>
-  <h2>📡 WebSocket Chat App with Live Video, Audio & GPS</h2>
+  <h2>📡 WebSocket Chat App with Live Video & GPS</h2>
 
   <div class="section">
     <input type="text" id="roomName" placeholder="Room name" />
@@ -44,10 +44,6 @@
   </div>
 
   <div class="section">
-    <button id="audioButton" onclick="toggleAudio()">🎤 Start Audio</button>
-  </div>
-
-  <div class="section">
     <label><strong>GPS Interval (seconds):</strong></label>
     <input type="number" id="gpsIntervalInput" min="1" value="5" />
     <button onclick="startGps()">📍 Start GPS</button>
@@ -72,7 +68,7 @@
 
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
-    const ws = new WebSocket("wss://chat-643f.onrender.com");
+    const ws = new WebSocket(`ws://${location.host}`);
     ws.binaryType = "arraybuffer";
     let currentRoom = "";
     let sendingVideo = false;
@@ -83,10 +79,6 @@
     let latestPosition = null;
     let clientId = Math.random().toString(36).substring(2, 10);
     let markerMap = {};
-    let sendingAudio = false;
-    let audioStream = null;
-    let audioContext = null;
-    let mediaRecorder = null;
 
     const map = L.map('map').setView([0, 0], 2);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
@@ -114,6 +106,8 @@
 
           } else if (msg.type === "error") {
             logMessage("❌ " + msg.message);
+          } else if (msg.type === "info") {
+            logMessage("ℹ️ " + msg.message);
           }
         } catch (e) {
           logMessage("❗ Invalid message: " + event.data);
@@ -155,82 +149,6 @@
       document.getElementById("textMessage").value = "";
     }
 
-    function clearMessages() {
-      document.getElementById("messageLog").innerHTML = "";
-    }
-
-    async function toggleLiveVideo() {
-      const button = document.getElementById("videoButton");
-      if (sendingVideo) {
-        clearInterval(videoInterval);
-        sendingVideo = false;
-        button.textContent = "📷 Start Live Video";
-        if (activeStream) activeStream.getTracks().forEach(t => t.stop());
-        return;
-      }
-
-      const constraints = getVideoConstraints();
-      const fps = parseInt(document.getElementById("fpsSlider").value);
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        activeStream = stream;
-        const video = document.createElement("video");
-        video.srcObject = stream;
-        await video.play();
-
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
-
-        sendingVideo = true;
-        button.textContent = "🛑 Stop Live Video";
-
-        videoInterval = setInterval(() => {
-          if (!currentRoom || video.videoWidth === 0) return;
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-          canvas.toBlob(blob => {
-            if (!blob) return;
-            ws.send(JSON.stringify({ type: "binary-image", roomName: currentRoom }));
-            setTimeout(() => blob.arrayBuffer().then(buf => ws.send(buf)), 20);
-          }, "image/jpeg", 0.6);
-        }, 1000 / fps);
-      } catch (err) {
-        logMessage("🚫 Camera error: " + err.message);
-      }
-    }
-
-    function getVideoConstraints() {
-      switch (document.getElementById("videoQualitySelect").value) {
-        case "veryLow120p": return { video: { width: 160, height: 120, frameRate: 10 }};
-        case "low240p": return { video: { width: 426, height: 240, frameRate: 15 }};
-        case "low360p": return { video: { width: 640, height: 360, frameRate: 15 }};
-        case "low480p": return { video: { width: 854, height: 480, frameRate: 20 }};
-        case "high": return { video: { width: 1920, height: 1080, frameRate: 30 }};
-        case "medium":
-        default: return { video: { width: 1280, height: 720, frameRate: 30 }};
-      }
-    }
-
-    function startGps() {
-      stopGps();
-      if (!navigator.geolocation) {
-        logMessage("🚫 Geolocation not supported.");
-        return;
-      }
-      if (!currentRoom) {
-        logMessage("⚠️ Join or create a room first!");
-        return;
-      }
-
-      const intervalSec = Math.max(1, parseInt(document.getElementById("gpsIntervalInput").value));
-
-      watchId = navigator.geolocation.watchPosition(pos => {
-        latestPosition = pos;
-        const lat = pos.coords.latitude.toFixed(6);
-        const lng = pos.coords.longitude.toFixed(6);
-        document.getElementById("gpsDisplay").text
-::contentReference[oaicite:8]{index=8}
+    function clear
+::contentReference[oaicite:18]{index=18}
  
