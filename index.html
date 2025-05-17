@@ -226,7 +226,7 @@
         document.getElementById("gpsDisplay").textContent = `Location: ${lat}, ${lng}`;
       }, err => {
         logMessage("🚫 GPS error: " + err.message);
-      }, { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 });
+      }, { enableHighAccuracy: true, maximumAge: 0, timeout: 1000 });
 
       gpsSendInterval = setInterval(() => {
         if (!latestPosition) return;
