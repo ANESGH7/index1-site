@@ -74,7 +74,8 @@
 
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script>
-    const ws = new WebSocket("wss://chat-643f.onrender.com");
+    // Change to your WebSocket server URL or ws://localhost:3000 if local
+    const ws = new WebSocket("ws://localhost:3000");
     ws.binaryType = "arraybuffer";
 
     let currentRoom = "";
@@ -96,228 +97,383 @@
 
     ws.onopen = () => logMessage("✅ Connected to WebSocket server");
     ws.onerror = () => logMessage("❌ WebSocket error");
-    ws.onclose = () => logMessage("❌ Disconnected");
+    ws.onclose = () => logMessage("❌ Disconnected from server");
 
-    ws.onmessage = async (event) => {
+    ws.onmessage = (event) => {
       if (typeof event.data === "string") {
-        // JSON header message - parse and set expected binary type
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "message") {
-            if (msg.text.startsWith("GPS:")) {
-              const [coords, senderId] = msg.text.substring(4).split(" & ");
-              const [lat, lng] = coords.split(",").map(Number);
-              if (!markerMap[senderId]) {
-                markerMap[senderId] = L.marker([lat, lng]).addTo(map).bindPopup("Client: " + senderId);
-              } else {
-                markerMap[senderId].setLatLng([lat, lng]);
-              }
-            } else {
-              logMessage("💬 " + msg.text);
-            }
-          } else if (msg.type === "binary-video") {
-            expectingBinary = "video";
-          } else if (msg.type === "binary-audio") {
-            expectingBinary = "audio";
-          } else if (msg.type === "create" || msg.type === "join") {
-            logMessage("ℹ️ " + msg.type + " room: " + msg.roomName);
-          }
-        } catch (e) {
-          console.error("JSON parse error:", e);
-        }
-      } else if (event.data instanceof ArrayBuffer) {
-        if (expectingBinary === "audio") {
-          const blob = new Blob([event.data], { type: "audio/webm" });
-          audioPlayer.src = URL.createObjectURL(blob);
-          expectingBinary = null;
-        } else if (expectingBinary === "video") {
-          const blob = new Blob([event.data], { type: "image/jpeg" });
-          const img = new Image();
-          img.onload = () => {
-            const ctx = videoCanvas.getContext("2d");
-            videoCanvas.width = img.width;
-            videoCanvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-            URL.revokeObjectURL(img.src);
-          };
-          img.src = URL.createObjectURL(blob);
-          expectingBinary = null;
-        } else {
-          console.warn("Unexpected binary data received with no expected type");
-        }
+        // Text message
+        const msg = JSON.parse(event.data);
+        handleServerMessage(msg);
+      } else {
+        // Binary data - interpret depending on state
+        handleBinaryData(event.data);
       }
     };
 
-    async function toggleVoiceCall() {
-      const button = document.getElementById("voiceButton");
-      if (sendingVoice) {
-        sendingVoice = false;
-        button.textContent = "🎤 Start Voice Call";
-        if (voiceRecorder) voiceRecorder.stop();
-        if (audioStream) audioStream.getTracks().forEach(t => t.stop());
-        audioStream = null;
-        logMessage("🛑 Voice call stopped.");
-        return;
-      }
-
-      if (!currentRoom) return alert("Join a room first.");
-      try {
-        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        voiceRecorder = new MediaRecorder(audioStream, { mimeType: "audio/webm" });
-        voiceRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0 && sendingVoice) {
-            // Send header first
-            ws.send(JSON.stringify({ type: "binary-audio", roomName: currentRoom }));
-            // Then send audio data
-            e.data.arrayBuffer().then(buf => ws.send(buf));
+    function handleServerMessage(msg) {
+      switch (msg.type) {
+        case "created":
+          logMessage(`Room "${msg.roomName}" created.`);
+          break;
+        case "joined":
+          logMessage(`Joined room "${msg.roomName}".`);
+          currentRoom = msg.roomName;
+          break;
+        case "message":
+          logMessage(`Room message: ${msg.text}`);
+          // Check if GPS message
+          if (msg.text.startsWith("GPS:")) {
+            const gpsData = JSON.parse(msg.text.slice(4));
+            updateGpsMarker(gpsData);
           }
-        };
-        voiceRecorder.start(500);
-        sendingVoice = true;
-        button.textContent = "🛑 Stop Voice Call";
-        logMessage("🎤 Voice call started.");
-      } catch (err) {
-        logMessage("🚫 Microphone error: " + err.message);
+          break;
+        case "error":
+          logMessage(`Error: ${msg.message}`);
+          break;
+        default:
+          logMessage(`Server: ${JSON.stringify(msg)}`);
       }
     }
 
-    function toggleLiveVideo() {
-      const btn = document.getElementById("videoButton");
-      if (videoInterval) {
-        clearInterval(videoInterval);
-        videoInterval = null;
-        if (videoStream) {
-          videoStream.getTracks().forEach(t => t.stop());
-          videoStream = null;
-        }
-        btn.textContent = "📷 Start Live Video";
-        logMessage("🛑 Video stopped");
-        return;
-      }
+    function handleBinaryData(data) {
+      // Data is an ArrayBuffer
+      const buf = new Uint8Array(data);
+      // The first few bytes might be a JSON header describing the type
+      // We expect messages to start with header length, then JSON header, then binary payload
 
-      if (!currentRoom) return alert("Join a room first.");
+      // For simplicity, expect first message to be JSON string (utf8) then rest is binary.
+      // We'll do a quick heuristic: first bytes are ASCII, so parse them until first null or bracket close.
 
-      navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
-        videoStream = stream;
-        const video = document.createElement("video");
-        video.srcObject = stream;
-        video.play();
+      // We'll try to parse a JSON header terminated by newline at start
 
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
+      const textDecoder = new TextDecoder("utf-8");
+      const str = textDecoder.decode(buf);
 
-        const fps = parseInt(document.getElementById("fpsSlider").value);
-        const quality = document.getElementById("videoQualitySelect").value;
-        const sizeMap = {
-          veryLow120p: [160, 120],
-          low240p: [320, 240],
-          low360p: [480, 360],
-          low480p: [640, 480],
-          medium: [1280, 720],
-          high: [1920, 1080],
-        };
-
-        const [w, h] = sizeMap[quality];
-        canvas.width = w;
-        canvas.height = h;
-
-        videoInterval = setInterval(() => {
-          ctx.drawImage(video, 0, 0, w, h);
-          canvas.toBlob((blob) => {
-            if (blob) {
-              // Send header first
-              ws.send(JSON.stringify({ type: "binary-video", roomName: currentRoom }));
-              // Then send video blob data
-              blob.arrayBuffer().then((buf) => ws.send(buf));
+      if (str.startsWith('{"type"')) {
+        // Find the end of JSON header (first occurrence of '}')
+        const endIndex = str.indexOf('}') + 1;
+        if (endIndex > 0) {
+          const jsonHeaderStr = str.slice(0, endIndex);
+          try {
+            const header = JSON.parse(jsonHeaderStr);
+            // The rest is binary payload
+            const payload = buf.slice(endIndex);
+            if (header.streamType === "video") {
+              drawVideoFrame(payload);
+            } else if (header.streamType === "audio") {
+              playAudioChunk(payload);
             }
-          }, "image/jpeg", 0.5);
-        }, 1000 / fps);
-
-        btn.textContent = "🛑 Stop Live Video";
-        logMessage("🎥 Video started");
-      }).catch(err => {
-        logMessage("🚫 Video error: " + err.message);
-      });
-    }
-
-    // ========== GPS Logic ==========
-    let gpsSendInterval = null;
-    let watchId = null;
-    let latestPosition = null;
-
-    function startGps() {
-      if (!navigator.geolocation) return alert("Geolocation unsupported.");
-      if (!currentRoom) return alert("Join a room first.");
-      const intervalSec = parseInt(document.getElementById("gpsIntervalInput").value, 10);
-      if (isNaN(intervalSec) || intervalSec < 1) return alert("Invalid GPS interval");
-
-      if (gpsSendInterval) clearInterval(gpsSendInterval);
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          latestPosition = pos.coords;
-          document.getElementById("gpsDisplay").textContent =
-            `Location: ${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`;
-        },
-        (err) => logMessage("🚫 GPS error: " + err.message),
-        { enableHighAccuracy: true }
-      );
-
-      gpsSendInterval = setInterval(() => {
-        if (latestPosition && currentRoom) {
-          const gpsMessage = `GPS:${latestPosition.latitude},${latestPosition.longitude} & ${clientId}`;
-          ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text: gpsMessage }));
+            return;
+          } catch {
+            // Fall back if parsing failed
+          }
         }
-      }, intervalSec * 1000);
+      }
 
-      logMessage("📍 Started GPS every " + intervalSec + " seconds.");
+      // If no header, treat as video by default
+      drawVideoFrame(buf);
     }
 
-    function stopGps() {
-      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-      if (gpsSendInterval) clearInterval(gpsSendInterval);
-      watchId = null;
-      gpsSendInterval = null;
-      document.getElementById("gpsDisplay").textContent = "Location: N/A";
-      logMessage("🛑 GPS stopped.");
-    }
-
-    // Utility
+    // Message log helper
     function logMessage(msg) {
-      const div = document.createElement("div");
-      div.textContent = msg;
-      messageLog.appendChild(div);
+      const el = document.createElement("div");
+      el.textContent = msg;
+      messageLog.appendChild(el);
       messageLog.scrollTop = messageLog.scrollHeight;
     }
 
-    document.getElementById("fpsSlider").addEventListener("input", (e) => {
-      document.getElementById("fpsValue").textContent = e.target.value;
-    });
-
+    // Create room
     function createRoom() {
-      const room = document.getElementById("roomName").value.trim();
-      if (!room) return alert("Enter a room name.");
-      currentRoom = room;
-      ws.send(JSON.stringify({ type: "create", roomName: room }));
-      logMessage("📂 Created room: " + room);
+      const roomName = document.getElementById("roomName").value.trim();
+      if (!roomName) return alert("Enter room name");
+      ws.send(JSON.stringify({ type: "create", roomName }));
     }
 
+    // Join room
     function joinRoom() {
-      const room = document.getElementById("roomName").value.trim();
-      if (!room) return alert("Enter a room name.");
-      currentRoom = room;
-      ws.send(JSON.stringify({ type: "join", roomName: room }));
-      logMessage("📥 Joined room: " + room);
+      const roomName = document.getElementById("roomName").value.trim();
+      if (!roomName) return alert("Enter room name");
+      ws.send(JSON.stringify({ type: "join", roomName }));
+      currentRoom = roomName;
     }
 
+    // Send text message
     function sendMessage() {
       const text = document.getElementById("textMessage").value.trim();
-      if (!text || !currentRoom) return;
+      if (!text || !currentRoom) return alert("Enter message and join a room first");
       ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text }));
+      logMessage(`You: ${text}`);
       document.getElementById("textMessage").value = "";
     }
 
+    // Clear messages
     function clearMessages() {
       messageLog.innerHTML = "";
+    }
+
+    // Video capture and send
+    async function toggleLiveVideo() {
+      const btn = document.getElementById("videoButton");
+      if (!videoStream) {
+        // Start video
+        try {
+          const quality = document.getElementById("videoQualitySelect").value;
+          const constraints = getVideoConstraints(quality);
+          videoStream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+          ws.send(JSON.stringify({ type: "setStreamType", streamType: "video" }));
+          startSendingVideo();
+          btn.textContent = "🛑 Stop Live Video";
+          logMessage("Started live video.");
+        } catch (e) {
+          alert("Error accessing camera: " + e.message);
+        }
+      } else {
+        // Stop video
+        stopSendingVideo();
+        videoStream.getTracks().forEach(t => t.stop());
+        videoStream = null;
+        btn.textContent = "📷 Start Live Video";
+        logMessage("Stopped live video.");
+      }
+    }
+
+    function getVideoConstraints(quality) {
+      switch (quality) {
+        case "veryLow120p": return { width: 160, height: 120 };
+        case "low240p": return { width: 320, height: 240 };
+        case "low360p": return { width: 480, height: 360 };
+        case "low480p": return { width: 640, height: 480 };
+        case "medium": return { width: 1280, height: 720 };
+        case "high": return { width: 1920, height: 1080 };
+        default: return { width: 640, height: 480 };
+      }
+    }
+
+    let videoCaptureCanvas = null;
+    let videoCaptureCtx = null;
+    let lastFrameTime = 0;
+
+    function startSendingVideo() {
+      if (!videoStream) return;
+      if (!videoCaptureCanvas) {
+        videoCaptureCanvas = document.createElement("canvas");
+        videoCaptureCtx = videoCaptureCanvas.getContext("2d");
+      }
+      const videoTrack = videoStream.getVideoTracks()[0];
+      const settings = videoTrack.getSettings();
+      videoCaptureCanvas.width = settings.width || 640;
+      videoCaptureCanvas.height = settings.height || 480;
+
+      const fpsSlider = document.getElementById("fpsSlider");
+      let fps = parseInt(fpsSlider.value);
+      fpsSlider.oninput = () => {
+        fps = parseInt(fpsSlider.value);
+        document.getElementById("fpsValue").textContent = fpsSlider.value;
+      };
+
+      function sendFrame() {
+        if (!videoStream) return;
+        const now = performance.now();
+        if (now - lastFrameTime >= (1000 / fps)) {
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+
+          // Actually draw frame
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+
+          videoCaptureCtx.drawImage(videoStream.getVideoTracks()[0].enabled ? videoCaptureCanvas : videoCaptureCanvas, 0, 0);
+
+          // Capture to JPEG blob
+          videoCaptureCanvas.toBlob((blob) => {
+            if (blob && ws.readyState === WebSocket.OPEN) {
+              // Send JSON header + binary data
+              const header = JSON.stringify({ type: "frame", streamType: "video", clientId });
+              const headerBytes = new TextEncoder().encode(header);
+              const combined = new Uint8Array(headerBytes.length + blob.size);
+              combined.set(headerBytes, 0);
+              blob.arrayBuffer().then(buffer => {
+                combined.set(new Uint8Array(buffer), headerBytes.length);
+                ws.send(combined);
+              });
+            }
+          }, "image/jpeg", 0.5);
+
+          lastFrameTime = now;
+        }
+        videoInterval = requestAnimationFrame(sendFrame);
+      }
+
+      sendFrame();
+    }
+
+    function stopSendingVideo() {
+      if (videoInterval) {
+        cancelAnimationFrame(videoInterval);
+        videoInterval = null;
+      }
+    }
+
+    function drawVideoFrame(data) {
+      const blob = new Blob([data], { type: "image/jpeg" });
+      const url = URL.createObjectURL(blob);
+      const ctx = videoCanvas.getContext("2d");
+      const img = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    }
+
+    // GPS functions
+
+    let gpsInterval = null;
+    let lastGpsSent = 0;
+
+    function startGps() {
+      if (!currentRoom) return alert("Join a room first!");
+      const intervalSec = parseInt(document.getElementById("gpsIntervalInput").value) || 5;
+      if (gpsInterval) clearInterval(gpsInterval);
+
+      gpsInterval = setInterval(() => {
+        navigator.geolocation.getCurrentPosition(pos => {
+          const coords = {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            clientId,
+          };
+          const msg = "GPS:" + JSON.stringify(coords);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "message", roomName: currentRoom, text: msg }));
+          }
+          document.getElementById("gpsDisplay").textContent =
+            `Location: Lat ${coords.latitude.toFixed(5)}, Lon ${coords.longitude.toFixed(5)}`;
+          updateGpsMarker(coords);
+        });
+      }, intervalSec * 1000);
+
+      logMessage("Started GPS sending every " + intervalSec + " seconds");
+    }
+
+    function stopGps() {
+      if (gpsInterval) clearInterval(gpsInterval);
+      gpsInterval = null;
+      document.getElementById("gpsDisplay").textContent = "Location: N/A";
+      logMessage("Stopped GPS sending");
+    }
+
+    function updateGpsMarker({ latitude, longitude, clientId }) {
+      if (!markerMap[clientId]) {
+        markerMap[clientId] = L.marker([latitude, longitude]).addTo(map).bindPopup(`Client ${clientId}`);
+      } else {
+        markerMap[clientId].setLatLng([latitude, longitude]);
+      }
+      // Adjust map center to show all markers
+      const group = new L.featureGroup(Object.values(markerMap));
+      map.fitBounds(group.getBounds().pad(0.5));
+    }
+
+    // Voice call
+
+    async function toggleVoiceCall() {
+      const btn = document.getElementById("voiceButton");
+      if (!sendingVoice) {
+        try {
+          audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          startVoiceStreaming(audioStream);
+          sendingVoice = true;
+          btn.textContent = "🛑 Stop Voice Call";
+          logMessage("Started voice call");
+        } catch (e) {
+          alert("Error accessing microphone: " + e.message);
+        }
+      } else {
+        stopVoiceStreaming();
+        if (audioStream) audioStream.getTracks().forEach(t => t.stop());
+        audioStream = null;
+        sendingVoice = false;
+        btn.textContent = "🎤 Start Voice Call";
+        logMessage("Stopped voice call");
+      }
+    }
+
+    let mediaRecorder = null;
+    let audioChunks = [];
+
+    function startVoiceStreaming(stream) {
+      mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+          // Send JSON header + binary data
+          const header = JSON.stringify({ type: "audio", streamType: "audio", clientId });
+          const headerBytes = new TextEncoder().encode(header);
+          e.data.arrayBuffer().then(buffer => {
+            const payload = new Uint8Array(buffer);
+            const combined = new Uint8Array(headerBytes.length + payload.length);
+            combined.set(headerBytes, 0);
+            combined.set(payload, headerBytes.length);
+            ws.send(combined);
+          });
+        }
+      };
+      mediaRecorder.start(500); // send audio data every 500ms
+    }
+
+    function stopVoiceStreaming() {
+      if (mediaRecorder) {
+        mediaRecorder.stop();
+        mediaRecorder = null;
+      }
+    }
+
+    // Incoming audio playback
+
+    const audioQueue = [];
+    let audioContext = null;
+    let audioSource = null;
+
+    function playAudioChunk(data) {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const blob = new Blob([data], { type: "audio/webm" });
+      const fileReader = new FileReader();
+      fileReader.onload = function () {
+        audioContext.decodeAudioData(fileReader.result).then(buffer => {
+          const source = audioContext.createBufferSource();
+          source.buffer = buffer;
+          source.connect(audioContext.destination);
+          source.start(0);
+        });
+      };
+      fileReader.readAsArrayBuffer(blob);
     }
   </script>
 </body>
